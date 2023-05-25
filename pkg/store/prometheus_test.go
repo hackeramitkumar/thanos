@@ -19,12 +19,13 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/component"
 	"github.com/thanos-io/thanos/pkg/promclient"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
 	"github.com/thanos-io/thanos/pkg/store/storepb/prompb"
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/thanos-io/thanos/pkg/testutil/custom"
 	"github.com/thanos-io/thanos/pkg/testutil/e2eutil"
 )
 
@@ -38,7 +39,7 @@ func TestPrometheusStore_Series_promOnPath_e2e(t *testing.T) {
 }
 
 func testPrometheusStoreSeriesE2e(t *testing.T, prefix string) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	p, err := e2eutil.NewPrometheusOnPath(prefix)
 	testutil.Ok(t, err)
@@ -47,11 +48,11 @@ func testPrometheusStoreSeriesE2e(t *testing.T, prefix string) {
 	baseT := timestamp.FromTime(time.Now()) / 1000 * 1000
 
 	a := p.Appender()
-	_, err = a.Append(0, labels.FromStrings("a", "b"), baseT+100, 1)
+	_, err = a.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+100, 1)
 	testutil.Ok(t, err)
-	_, err = a.Append(0, labels.FromStrings("a", "b"), baseT+200, 2)
+	_, err = a.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+200, 2)
 	testutil.Ok(t, err)
-	_, err = a.Append(0, labels.FromStrings("a", "b"), baseT+300, 3)
+	_, err = a.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+300, 3)
 	testutil.Ok(t, err)
 	testutil.Ok(t, a.Commit())
 
@@ -66,7 +67,7 @@ func testPrometheusStoreSeriesE2e(t *testing.T, prefix string) {
 	limitMinT := int64(0)
 	proxy, err := NewPrometheusStore(nil, nil, promclient.NewDefaultClient(), u, component.Sidecar,
 		func() labels.Labels { return labels.FromStrings("region", "eu-west") },
-		func() (int64, int64) { return limitMinT, -1 }, nil) // Maxt does not matter.
+		func() (int64, int64) { return limitMinT, -1 }, nil) // MaxTime does not matter.
 	testutil.Ok(t, err)
 
 	// Query all three samples except for the first one. Since we round up queried data
@@ -156,7 +157,7 @@ type sample struct {
 }
 
 func expandChunk(cit chunkenc.Iterator) (res []sample) {
-	for cit.Next() {
+	for cit.Next() != chunkenc.ValNone {
 		t, v := cit.At()
 		res = append(res, sample{t, v})
 	}
@@ -164,7 +165,7 @@ func expandChunk(cit chunkenc.Iterator) (res []sample) {
 }
 
 func TestPrometheusStore_SeriesLabels_e2e(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	p, err := e2eutil.NewPrometheus()
 	testutil.Ok(t, err)
@@ -346,7 +347,7 @@ func TestPrometheusStore_SeriesLabels_e2e(t *testing.T) {
 }
 
 func TestPrometheusStore_LabelAPIs(t *testing.T) {
-	t.Cleanup(func() { testutil.TolerantVerifyLeak(t) })
+	t.Cleanup(func() { custom.TolerantVerifyLeak(t) })
 	testLabelAPIs(t, func(extLset labels.Labels, appendFn func(app storage.Appender)) storepb.StoreServer {
 		p, err := e2eutil.NewPrometheus()
 		testutil.Ok(t, err)
@@ -371,7 +372,7 @@ func TestPrometheusStore_LabelAPIs(t *testing.T) {
 }
 
 func TestPrometheusStore_Series_MatchExternalLabel(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	p, err := e2eutil.NewPrometheus()
 	testutil.Ok(t, err)
@@ -380,11 +381,11 @@ func TestPrometheusStore_Series_MatchExternalLabel(t *testing.T) {
 	baseT := timestamp.FromTime(time.Now()) / 1000 * 1000
 
 	a := p.Appender()
-	_, err = a.Append(0, labels.FromStrings("a", "b"), baseT+100, 1)
+	_, err = a.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+100, 1)
 	testutil.Ok(t, err)
-	_, err = a.Append(0, labels.FromStrings("a", "b"), baseT+200, 2)
+	_, err = a.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+200, 2)
 	testutil.Ok(t, err)
-	_, err = a.Append(0, labels.FromStrings("a", "b"), baseT+300, 3)
+	_, err = a.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+300, 3)
 	testutil.Ok(t, err)
 	testutil.Ok(t, a.Commit())
 
@@ -433,7 +434,7 @@ func TestPrometheusStore_Series_MatchExternalLabel(t *testing.T) {
 }
 
 func TestPrometheusStore_Series_ChunkHashCalculation_Integration(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	p, err := e2eutil.NewPrometheus()
 	testutil.Ok(t, err)
@@ -482,7 +483,7 @@ func TestPrometheusStore_Series_ChunkHashCalculation_Integration(t *testing.T) {
 }
 
 func TestPrometheusStore_Info(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -506,7 +507,7 @@ func testSeries_SplitSamplesIntoChunksWithMaxSizeOf120(t *testing.T, appender st
 
 	offset := int64(2*math.MaxUint16 + 5)
 	for i := int64(0); i < offset; i++ {
-		_, err := appender.Append(0, labels.FromStrings("a", "b"), baseT+i, 1)
+		_, err := appender.Append(0, labels.FromStrings("a", "b", "region", "eu-west"), baseT+i, 1)
 		testutil.Ok(t, err)
 	}
 
@@ -553,7 +554,7 @@ func testSeries_SplitSamplesIntoChunksWithMaxSizeOf120(t *testing.T, appender st
 
 // Regression test for https://github.com/thanos-io/thanos/issues/396.
 func TestPrometheusStore_Series_SplitSamplesIntoChunksWithMaxSizeOf120(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	p, err := e2eutil.NewPrometheus()
 	testutil.Ok(t, err)

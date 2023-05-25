@@ -20,10 +20,10 @@ import (
 
 	"github.com/thanos-io/objstore"
 
+	"github.com/efficientgo/core/testutil"
 	thanoscache "github.com/thanos-io/thanos/pkg/cache"
 	"github.com/thanos-io/thanos/pkg/runutil"
 	"github.com/thanos-io/thanos/pkg/store/cache/cachekey"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 const testFilename = "/random_object"
@@ -282,7 +282,7 @@ func newMockCache() *mockCache {
 	return c
 }
 
-func (m *mockCache) Store(_ context.Context, data map[string][]byte, ttl time.Duration) {
+func (m *mockCache) Store(data map[string][]byte, ttl time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

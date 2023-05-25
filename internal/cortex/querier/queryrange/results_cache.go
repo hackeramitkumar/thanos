@@ -404,7 +404,7 @@ func (s resultsCache) handleHit(ctx context.Context, r Request, extents []Extent
 		return nil, nil, err
 	}
 	if len(requests) == 0 {
-		response, err := s.merger.MergeResponse(responses...)
+		response, err := s.merger.MergeResponse(r, responses...)
 		// No downstream requests so no need to write back to the cache.
 		return response, nil, err
 	}
@@ -466,7 +466,7 @@ func (s resultsCache) handleHit(ctx context.Context, r Request, extents []Extent
 		if err != nil {
 			return nil, nil, err
 		}
-		merged, err := s.merger.MergeResponse(accumulator.Response, currentRes)
+		merged, err := s.merger.MergeResponse(r, accumulator.Response, currentRes)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -478,7 +478,7 @@ func (s resultsCache) handleHit(ctx context.Context, r Request, extents []Extent
 		return nil, nil, err
 	}
 
-	response, err := s.merger.MergeResponse(responses...)
+	response, err := s.merger.MergeResponse(r, responses...)
 	return response, mergedExtents, err
 }
 
@@ -686,15 +686,28 @@ func extractMatrix(start, end int64, matrix []SampleStream) []SampleStream {
 
 func extractSampleStream(start, end int64, stream SampleStream) (SampleStream, bool) {
 	result := SampleStream{
-		Labels:  stream.Labels,
-		Samples: make([]cortexpb.Sample, 0, len(stream.Samples)),
+		Labels: stream.Labels,
 	}
+
+	if len(stream.Samples) > 0 {
+		result.Samples = make([]cortexpb.Sample, 0, len(stream.Samples))
+	}
+
+	if len(stream.Histograms) > 0 {
+		result.Histograms = make([]SampleHistogramPair, 0, len(stream.Histograms))
+	}
+
 	for _, sample := range stream.Samples {
 		if start <= sample.TimestampMs && sample.TimestampMs <= end {
 			result.Samples = append(result.Samples, sample)
 		}
 	}
-	if len(result.Samples) == 0 {
+	for _, histogram := range stream.Histograms {
+		if start <= int64(histogram.GetTimestamp()) && int64(histogram.GetTimestamp()) <= end {
+			result.Histograms = append(result.Histograms, histogram)
+		}
+	}
+	if len(result.Samples) == 0 && len(result.Histograms) == 0 {
 		return SampleStream{}, false
 	}
 	return result, true

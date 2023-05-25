@@ -11,8 +11,8 @@ Example command to run Querier:
 ```bash
 thanos query \
     --http-address     "0.0.0.0:9090" \
-    --store            "<store-api>:<grpc-port>" \
-    --store            "<store-api2>:<grpc-port>"
+    --endpoint         "<store-api>:<grpc-port>" \
+    --endpoint         "<store-api2>:<grpc-port>"
 ```
 
 ## Querier use cases, why do I need this component?
@@ -71,8 +71,8 @@ If we configure Querier like this:
 thanos query \
     --http-address        "0.0.0.0:9090" \
     --query.replica-label "replica" \
-    --store               "<store-api>:<grpc-port>" \
-    --store               "<store-api2>:<grpc-port>" \
+    --endpoint            "<store-api>:<grpc-port>" \
+    --endpoint            "<store-api2>:<grpc-port>" \
 ```
 
 And we query for metric `up{job="prometheus",env="2"}` with this option we will get 2 results:
@@ -97,8 +97,8 @@ thanos query \
     --http-address        "0.0.0.0:9090" \
     --query.replica-label "replica" \
     --query.replica-label "replicaX" \
-    --store               "<store-api>:<grpc-port>" \
-    --store               "<store-api2>:<grpc-port>" \
+    --endpoint            "<store-api>:<grpc-port>" \
+    --endpoint            "<store-api2>:<grpc-port>" \
 ```
 
 This logic can also be controlled via parameter on QueryAPI. More details below.
@@ -280,6 +280,17 @@ Flags:
                                  prefixed with 'dns+' or 'dnssrv+' to detect
                                  Thanos API servers through respective DNS
                                  lookups.
+      --endpoint-group=<endpoint-group> ...
+                                 Experimental: DNS name of statically configured
+                                 Thanos API server groups (repeatable). Targets
+                                 resolved from the DNS name will be queried in
+                                 a round-robin, instead of a fanout manner.
+                                 This flag should be used when connecting a
+                                 Thanos Query to HA groups of Thanos components.
+      --endpoint-group-strict=<endpoint-group-strict> ...
+                                 Experimental: DNS name of statically configured
+                                 Thanos API server groups (repeatable) that are
+                                 always used, even if the health check fails.
       --endpoint-strict=<staticendpoint> ...
                                  Addresses of only statically configured Thanos
                                  API servers that are always used, even if
@@ -307,9 +318,9 @@ Flags:
       --grpc-grace-period=2m     Time to wait after an interrupt received for
                                  GRPC Server.
       --grpc-server-max-connection-age=60m
-                                 The grpc server max connection age.
-                                 This controls how often to re-read the tls
-                                 certificates and redo the TLS handshake
+                                 The grpc server max connection age. This
+                                 controls how often to re-establish connections
+                                 and redo TLS handshakes.
       --grpc-server-tls-cert=""  TLS Certificate for gRPC server, leave blank to
                                  disable TLS
       --grpc-server-tls-client-ca=""
@@ -386,7 +397,7 @@ Flags:
                                  no partial_response param is specified.
                                  --no-query.partial-response for disabling.
       --query.promql-engine=prometheus
-                                 PromQL engine to use.
+                                 Default PromQL engine to use.
       --query.replica-label=QUERY.REPLICA-LABEL ...
                                  Labels to treat as a replica indicator along
                                  which data is deduplicated. Still you will
@@ -429,6 +440,17 @@ Flags:
                                  that are always used, even if the health check
                                  fails. Useful if you have a caching layer on
                                  top.
+      --store.limits.request-samples=0
+                                 The maximum samples allowed for a single
+                                 Series request, The Series call fails if
+                                 this limit is exceeded. 0 means no limit.
+                                 NOTE: For efficiency the limit is internally
+                                 implemented as 'chunks limit' considering each
+                                 chunk contains a maximum of 120 samples.
+      --store.limits.request-series=0
+                                 The maximum series allowed for a single Series
+                                 request. The Series call fails if this limit is
+                                 exceeded. 0 means no limit.
       --store.response-timeout=0ms
                                  If a Store doesn't send any data in this
                                  specified duration then a Store will be ignored

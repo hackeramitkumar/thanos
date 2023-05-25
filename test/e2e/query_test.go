@@ -43,6 +43,7 @@ import (
 	"github.com/thanos-io/objstore/client"
 	"github.com/thanos-io/objstore/providers/s3"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/exemplars/exemplarspb"
@@ -53,7 +54,6 @@ import (
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	prompb_copy "github.com/thanos-io/thanos/pkg/store/storepb/prompb"
 	"github.com/thanos-io/thanos/pkg/targets/targetspb"
-	"github.com/thanos-io/thanos/pkg/testutil"
 	"github.com/thanos-io/thanos/pkg/testutil/e2eutil"
 	"github.com/thanos-io/thanos/test/e2e/e2ethanos"
 )
@@ -542,7 +542,7 @@ config:
 				ruleAndAssert(t, ctx, q.Endpoint("http"), "", []*rulespb.RuleGroup{
 					{
 						Name: "example_abort",
-						File: "/shared/data/querier-1/rules/rules.yaml",
+						File: q.Dir() + "/rules/rules.yaml",
 						Rules: []*rulespb.Rule{
 							rulespb.NewAlertingRule(&rulespb.Alert{
 								Name:  "TestAlert_AbortOnPartialResponse",
@@ -591,14 +591,14 @@ func TestQueryStoreMetrics(t *testing.T) {
 	t.Cleanup(cancel)
 
 	bucket := "store-gw-test"
-	minio := e2ethanos.NewMinio(e, "thanos-minio", bucket)
+	minio := e2edb.NewMinio(e, "thanos-minio", bucket, e2edb.WithMinioTLS())
 	testutil.Ok(t, e2e.StartAndWaitReady(minio))
 
 	l := log.NewLogfmtLogger(os.Stdout)
-	bkt, err := s3.NewBucketWithConfig(l, e2ethanos.NewS3Config(bucket, minio.Endpoint("https"), minio.Dir()), "test")
+	bkt, err := s3.NewBucketWithConfig(l, e2ethanos.NewS3Config(bucket, minio.Endpoint("http"), minio.Dir()), "test")
 	testutil.Ok(t, err)
 
-	// Preparing 2 different blocks for the tests.
+	// Preparing 3 different blocks for the tests.
 	{
 		blockSizes := []struct {
 			samples int
@@ -607,6 +607,7 @@ func TestQueryStoreMetrics(t *testing.T) {
 		}{
 			{samples: 10, series: 1, name: "one_series"},
 			{samples: 10, series: 1001, name: "thousand_one_series"},
+			{samples: 10, series: 10001, name: "inf_series"},
 		}
 		now := time.Now()
 		externalLabels := labels.FromStrings("prometheus", "p1", "replica", "0")
@@ -639,14 +640,17 @@ func TestQueryStoreMetrics(t *testing.T) {
 		"s1",
 		client.BucketConfig{
 			Type:   client.S3,
-			Config: e2ethanos.NewS3Config(bucket, minio.InternalEndpoint("https"), minio.InternalDir()),
+			Config: e2ethanos.NewS3Config(bucket, minio.InternalEndpoint("http"), minio.InternalDir()),
 		},
 		"",
 		nil,
 	)
-	querier := e2ethanos.NewQuerierBuilder(e, "1", storeGW.InternalEndpoint("grpc")).Init()
+
+	sampleBuckets := []float64{100, 1000, 10000, 100000}
+	seriesBuckets := []float64{10, 100, 1000, 10000}
+	querier := e2ethanos.NewQuerierBuilder(e, "1", storeGW.InternalEndpoint("grpc")).WithTelemetryQuantiles(nil, sampleBuckets, seriesBuckets).Init()
 	testutil.Ok(t, e2e.StartAndWaitReady(storeGW, querier))
-	testutil.Ok(t, storeGW.WaitSumMetrics(e2emon.Equals(2), "thanos_blocks_meta_synced"))
+	testutil.Ok(t, storeGW.WaitSumMetrics(e2emon.Equals(3), "thanos_blocks_meta_synced"))
 
 	// Querying the series in the previously created blocks to ensure we produce Store API query metrics.
 	{
@@ -662,6 +666,13 @@ func TestQueryStoreMetrics(t *testing.T) {
 		}, time.Now, promclient.QueryOptions{
 			Deduplicate: true,
 		}, 1001)
+		testutil.Ok(t, err)
+
+		instantQuery(t, ctx, querier.Endpoint("http"), func() string {
+			return "max_over_time(inf_series[2h])"
+		}, time.Now, promclient.QueryOptions{
+			Deduplicate: true,
+		}, 10001)
 		testutil.Ok(t, err)
 	}
 
@@ -701,6 +712,24 @@ func TestQueryStoreMetrics(t *testing.T) {
 			Value: model.SampleValue(1),
 		},
 	})
+
+	queryWaitAndAssert(t, ctx, mon.GetMonitoringRunnable().Endpoint(e2edb.AccessPortName), func() string {
+		return "thanos_store_api_query_duration_seconds_count{samples_le='+Inf',series_le='+Inf'}"
+	}, time.Now, promclient.QueryOptions{
+		Deduplicate: true,
+	}, model.Vector{
+		&model.Sample{
+			Metric: model.Metric{
+				"__name__":   "thanos_store_api_query_duration_seconds_count",
+				"instance":   "storemetrics01-querier-1:8080",
+				"job":        "querier-1",
+				"samples_le": "+Inf",
+				"series_le":  "+Inf",
+			},
+			Value: model.SampleValue(1),
+		},
+	})
+
 }
 
 // Regression test for https://github.com/thanos-io/thanos/issues/5033.
@@ -719,7 +748,7 @@ func TestSidecarStorePushdown(t *testing.T) {
 	testutil.Ok(t, e2e.StartAndWaitReady(prom1, sidecar1))
 
 	const bucket = "store-gateway-test"
-	m := e2ethanos.NewMinio(e, "thanos-minio", bucket)
+	m := e2edb.NewMinio(e, "thanos-minio", bucket, e2edb.WithMinioTLS())
 	testutil.Ok(t, e2e.StartAndWaitReady(m))
 
 	dir := filepath.Join(e.SharedDir(), "tmp")
@@ -736,7 +765,7 @@ func TestSidecarStorePushdown(t *testing.T) {
 	testutil.Ok(t, err)
 
 	l := log.NewLogfmtLogger(os.Stdout)
-	bkt, err := s3.NewBucketWithConfig(l, e2ethanos.NewS3Config(bucket, m.Endpoint("https"), m.Dir()), "test")
+	bkt, err := s3.NewBucketWithConfig(l, e2ethanos.NewS3Config(bucket, m.Endpoint("http"), m.Dir()), "test")
 	testutil.Ok(t, err)
 	testutil.Ok(t, objstore.UploadDir(ctx, l, bkt, path.Join(dir, id1.String()), id1.String()))
 
@@ -745,7 +774,7 @@ func TestSidecarStorePushdown(t *testing.T) {
 		"1",
 		client.BucketConfig{
 			Type:   client.S3,
-			Config: e2ethanos.NewS3Config(bucket, m.InternalEndpoint("https"), m.InternalDir()),
+			Config: e2ethanos.NewS3Config(bucket, m.InternalEndpoint("http"), m.InternalDir()),
 		},
 		"",
 		nil,
@@ -1205,18 +1234,7 @@ func synthesizeFakeMetricSamples(ctx context.Context, prometheus *e2emon.Instrum
 }
 
 func synthesizeSamples(ctx context.Context, prometheus *e2emon.InstrumentedRunnable, samples []model.Sample) error {
-	remoteWriteURL, err := url.Parse("http://" + prometheus.Endpoint("http") + "/api/v1/write")
-	if err != nil {
-		return err
-	}
-
-	client, err := remote.NewWriteClient("remote-write-client", &remote.ClientConfig{
-		URL:     &config_util.URL{URL: remoteWriteURL},
-		Timeout: model.Duration(30 * time.Second),
-	})
-	if err != nil {
-		return err
-	}
+	rawRemoteWriteURL := "http://" + prometheus.Endpoint("http") + "/api/v1/write"
 
 	samplespb := make([]prompb.TimeSeries, 0, len(samples))
 	for _, sample := range samples {
@@ -1238,13 +1256,30 @@ func synthesizeSamples(ctx context.Context, prometheus *e2emon.InstrumentedRunna
 		})
 	}
 
-	sample := &prompb.WriteRequest{
+	writeRequest := &prompb.WriteRequest{
 		Timeseries: samplespb,
+	}
+
+	return storeWriteRequest(ctx, rawRemoteWriteURL, writeRequest)
+}
+
+func storeWriteRequest(ctx context.Context, rawRemoteWriteURL string, req *prompb.WriteRequest) error {
+	remoteWriteURL, err := url.Parse(rawRemoteWriteURL)
+	if err != nil {
+		return err
+	}
+
+	client, err := remote.NewWriteClient("remote-write-client", &remote.ClientConfig{
+		URL:     &config_util.URL{URL: remoteWriteURL},
+		Timeout: model.Duration(30 * time.Second),
+	})
+	if err != nil {
+		return err
 	}
 
 	var buf []byte
 	pBuf := proto.NewBuffer(nil)
-	if err := pBuf.Marshal(sample); err != nil {
+	if err := pBuf.Marshal(req); err != nil {
 		return err
 	}
 
@@ -1445,6 +1480,10 @@ func TestSidecarAlignmentPushdown(t *testing.T) {
 
 		if len(warnings) > 0 {
 			return errors.Errorf("unexpected warnings %s", warnings)
+		}
+
+		if len(res) == 0 {
+			return errors.Errorf("got empty result")
 		}
 
 		expectedRes = res

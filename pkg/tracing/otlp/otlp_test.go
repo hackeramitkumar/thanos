@@ -7,7 +7,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/tracing"
 	"github.com/thanos-io/thanos/pkg/tracing/migration"
 
@@ -23,7 +23,9 @@ func TestContextTracing_ClientEnablesTracing(t *testing.T) {
 	tracerOtel := newTraceProvider(
 		context.Background(),
 		tracesdk.NewSimpleSpanProcessor(exp),
-		log.NewNopLogger())
+		log.NewNopLogger(),
+		"thanos",
+		tracesdk.AlwaysSample())
 	tracer, _ := migration.Bridge(tracerOtel, log.NewNopLogger())
 	clientRoot, _ := tracing.StartSpan(tracing.ContextWithTracer(context.Background(), tracer), "a")
 

@@ -53,10 +53,17 @@ message InfoResponse {
 
 // StoreInfo holds the metadata related to Store API exposed by the component.
 message StoreInfo {
+    reserved 4; // Deprecated send_sorted, replaced by supports_without_replica_labels now.
+
     int64 min_time = 1;
     int64 max_time = 2;
-    bool  supports_sharding = 3;
-    bool  sends_sorted_series = 4;
+    bool supports_sharding = 3;
+
+    // replica_aware means this store supports without_replica_labels of StoreAPI.Series.
+    bool supports_without_replica_labels = 5;
+
+    // TSDBInfos holds metadata for all TSDBs exposed by the store.
+    repeated TSDBInfo tsdb_infos = 6 [(gogoproto.nullable) = false];
 }
 
 // RulesInfo holds the metadata related to Rules API exposed by the component.
@@ -79,4 +86,11 @@ message ExemplarsInfo {
 
 // QueryInfo holds the metadata related to Query API exposed by the component.
 message QueryAPIInfo {
+}
+
+message TSDBInfo {
+    ZLabelSet labels = 1 [(gogoproto.nullable) = false];
+
+    int64 min_time = 2;
+    int64 max_time = 3;
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/pkg/errors"
 	prom_testutil "github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/efficientgo/core/testutil"
 )
 
 func TestMemcachedCache(t *testing.T) {
@@ -75,7 +75,7 @@ func TestMemcachedCache(t *testing.T) {
 
 			// Store the postings expected before running the test.
 			ctx := context.Background()
-			c.Store(ctx, testData.setup, time.Hour)
+			c.Store(testData.setup, time.Hour)
 
 			// Fetch postings from cached and assert on it.
 			hits := c.Fetch(ctx, testData.fetchKeys)
@@ -118,7 +118,7 @@ func (c *mockedMemcachedClient) GetMulti(_ context.Context, keys []string) map[s
 	return hits
 }
 
-func (c *mockedMemcachedClient) SetAsync(_ context.Context, key string, value []byte, _ time.Duration) error {
+func (c *mockedMemcachedClient) SetAsync(key string, value []byte, _ time.Duration) error {
 	c.cache[key] = value
 	return nil
 }

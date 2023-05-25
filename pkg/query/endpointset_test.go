@@ -23,13 +23,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/pkg/errors"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/thanos-io/thanos/pkg/component"
 	"github.com/thanos-io/thanos/pkg/info/infopb"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 var testGRPCOpts = []grpc.DialOption{
@@ -272,7 +272,7 @@ func (e *testEndpoints) CloseOne(addr string) {
 }
 
 func TestTruncateExtLabels(t *testing.T) {
-	const testLength = 5
+	const testLength = 10
 
 	for _, tc := range []struct {
 		labelToTruncate string
@@ -283,20 +283,24 @@ func TestTruncateExtLabels(t *testing.T) {
 			expectedOutput:  "{abc}",
 		},
 		{
-			labelToTruncate: "{abcd}",
-			expectedOutput:  "{abc}",
-		},
-		{
-			labelToTruncate: "{abcde}",
-			expectedOutput:  "{abc}",
-		},
-		{
-			labelToTruncate: "{abcdef}",
-			expectedOutput:  "{abc}",
+			labelToTruncate: "{abcdefgh}",
+			expectedOutput:  "{abcdefgh}",
 		},
 		{
 			labelToTruncate: "{abcdefghij}",
-			expectedOutput:  "{abc}",
+			expectedOutput:  "{abcdefgh}",
+		},
+		{
+			labelToTruncate: "{abcde花}",
+			expectedOutput:  "{abcde花}",
+		},
+		{
+			labelToTruncate: "{abcde花朵}",
+			expectedOutput:  "{abcde花}",
+		},
+		{
+			labelToTruncate: "{abcde花fghij}",
+			expectedOutput:  "{abcde花}",
 		},
 	} {
 		t.Run(tc.labelToTruncate, func(t *testing.T) {

@@ -5,6 +5,7 @@ package otlp
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/thanos-io/thanos/pkg/tracing/migration"
@@ -17,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	_ "google.golang.org/grpc/encoding/gzip"
 	"gopkg.in/yaml.v2"
 )
@@ -24,6 +26,9 @@ import (
 const (
 	TracingClientGRPC string = "grpc"
 	TracingClientHTTP string = "http"
+	AlwaysSample      string = "alwayssample"
+	NeverSample       string = "neversample"
+	RatioBasedSample  string = "traceidratiobased"
 )
 
 // NewOTELTracer returns an OTLP exporter based tracer.
@@ -58,18 +63,23 @@ func NewTracerProvider(ctx context.Context, logger log.Logger, conf []byte) (*tr
 	}
 
 	processor := tracesdk.NewBatchSpanProcessor(exporter)
-	tp := newTraceProvider(ctx, processor, logger)
+	sampler, err := getSampler(config)
+	if err != nil {
+		logger.Log(err)
+	}
+	tp := newTraceProvider(ctx, processor, logger, config.ServiceName, sampler)
 
 	return tp, nil
 }
 
-func newTraceProvider(ctx context.Context, processor tracesdk.SpanProcessor, logger log.Logger) *tracesdk.TracerProvider {
-	resource, err := resource.New(ctx)
+func newTraceProvider(ctx context.Context, processor tracesdk.SpanProcessor, logger log.Logger, serviceName string, sampler tracesdk.Sampler) *tracesdk.TracerProvider {
+	resource, err := resource.New(
+		ctx,
+		resource.WithAttributes(semconv.ServiceNameKey.String(serviceName)),
+	)
 	if err != nil {
 		level.Warn(logger).Log("msg", "jaeger: detecting resources for tracing provider failed", "err", err)
 	}
-
-	sampler := tracesdk.ParentBased(tracesdk.TraceIDRatioBased(1.0))
 
 	tp := tracesdk.NewTracerProvider(
 		tracesdk.WithSpanProcessor(processor),
@@ -81,4 +91,21 @@ func newTraceProvider(ctx context.Context, processor tracesdk.SpanProcessor, log
 		),
 	)
 	return tp
+}
+
+func getSampler(config Config) (tracesdk.Sampler, error) {
+	switch strings.ToLower(config.SamplerType) {
+	case AlwaysSample:
+		return tracesdk.ParentBased(tracesdk.AlwaysSample()), nil
+	case NeverSample:
+		return tracesdk.ParentBased(tracesdk.NeverSample()), nil
+	case RatioBasedSample:
+		arg, err := strconv.ParseFloat(config.SamplerParam, 64)
+		if err != nil {
+			return tracesdk.ParentBased(tracesdk.TraceIDRatioBased(1.0)), err
+		}
+		return tracesdk.ParentBased(tracesdk.TraceIDRatioBased(arg)), nil
+	}
+
+	return tracesdk.ParentBased(tracesdk.TraceIDRatioBased(1.0)), nil
 }

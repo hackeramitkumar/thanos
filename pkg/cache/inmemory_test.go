@@ -13,7 +13,7 @@ import (
 
 	prom_testutil "github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/efficientgo/core/testutil"
 )
 
 func TestInmemoryCache(t *testing.T) {
@@ -85,7 +85,7 @@ max_item_size: 2KB
 
 			// Store the postings expected before running the test.
 			ctx := context.Background()
-			c.Store(ctx, testData.setup, testData.ttl)
+			c.Store(testData.setup, testData.ttl)
 
 			// Add delay to test expiry functionality.
 			if testData.testTTL {

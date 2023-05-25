@@ -5,18 +5,26 @@ package cacheutil
 
 import (
 	"context"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/onsi/gomega"
+	"github.com/onsi/gomega/gleak"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/atomic"
-	"go.uber.org/goleak"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/gate"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	g := gomega.NewGomega(func(message string, callerSkip ...int) {
+		panic(message)
+	})
+	code := m.Run()
+	g.Eventually(gleak.Goroutines).WithTimeout(time.Second * 20).ShouldNot(gleak.HaveLeaked())
+	os.Exit(code)
 }
 
 func TestDoWithBatch(t *testing.T) {
@@ -58,7 +66,7 @@ func TestDoWithBatch(t *testing.T) {
 			items:           []string{"key1", "key2", "key3", "key4", "key5"},
 			batchSize:       2,
 			expectedBatches: 3,
-			concurrency:     gate.New(prometheus.NewPedanticRegistry(), 1),
+			concurrency:     gate.New(prometheus.NewPedanticRegistry(), 1, gate.Queries),
 		},
 	}
 

@@ -6,7 +6,7 @@ package store
 import (
 	"testing"
 
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/efficientgo/core/testutil"
 )
 
 // Refer to https://github.com/prometheus/prometheus/issues/2651.
@@ -18,6 +18,15 @@ func TestFindSetMatches(t *testing.T) {
 		// Simple sets.
 		{
 			pattern: "foo|bar|baz",
+			exp: []string{
+				"foo",
+				"bar",
+				"baz",
+			},
+		},
+		// Simple sets with group wrapper.
+		{
+			pattern: "(foo|bar|baz)",
 			exp: []string{
 				"foo",
 				"bar",
@@ -36,6 +45,10 @@ func TestFindSetMatches(t *testing.T) {
 		// Simple sets containing special characters without escaping.
 		{
 			pattern: "fo.o|bar?|^baz",
+			exp:     nil,
+		},
+		{
+			pattern: "(fool|bar)|(baz)",
 			exp:     nil,
 		},
 		{

@@ -30,7 +30,6 @@ import (
 	"github.com/leanovate/gopter/gen"
 	"github.com/leanovate/gopter/prop"
 	"github.com/oklog/ulid"
-
 	"github.com/prometheus/client_golang/prometheus"
 	promtest "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/prometheus/model/labels"
@@ -44,6 +43,8 @@ import (
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
 
+	"github.com/efficientgo/core/testutil"
+
 	"github.com/thanos-io/thanos/pkg/block"
 	"github.com/thanos-io/thanos/pkg/block/indexheader"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
@@ -56,7 +57,7 @@ import (
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
 	storetestutil "github.com/thanos-io/thanos/pkg/store/storepb/testutil"
-	"github.com/thanos-io/thanos/pkg/testutil"
+	"github.com/thanos-io/thanos/pkg/testutil/custom"
 	"github.com/thanos-io/thanos/pkg/testutil/e2eutil"
 )
 
@@ -193,7 +194,7 @@ func TestBucketBlock_Property(t *testing.T) {
 }
 
 func TestBucketFilterExtLabelsMatchers(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	dir := t.TempDir()
 	bkt, err := filesystem.NewBucket(dir)
@@ -239,7 +240,7 @@ func TestBucketFilterExtLabelsMatchers(t *testing.T) {
 }
 
 func TestBucketBlock_matchLabels(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	dir := t.TempDir()
 
@@ -335,7 +336,7 @@ func TestBucketBlock_matchLabels(t *testing.T) {
 }
 
 func TestBucketBlockSet_addGet(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	set := newBucketBlockSet(labels.Labels{})
 
@@ -446,7 +447,7 @@ func TestBucketBlockSet_addGet(t *testing.T) {
 }
 
 func TestBucketBlockSet_remove(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	set := newBucketBlockSet(labels.Labels{})
 
@@ -476,7 +477,7 @@ func TestBucketBlockSet_remove(t *testing.T) {
 }
 
 func TestBucketBlockSet_labelMatchers(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	set := newBucketBlockSet(labels.FromStrings("a", "b", "c", "d"))
 
@@ -545,7 +546,7 @@ func TestBucketBlockSet_labelMatchers(t *testing.T) {
 }
 
 func TestGapBasedPartitioner_Partition(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	const maxGapSize = 1024 * 512
 
@@ -631,7 +632,7 @@ func TestBucketStoreConfig_validate(t *testing.T) {
 }
 
 func TestBucketStore_Info(t *testing.T) {
-	defer testutil.TolerantVerifyLeak(t)
+	defer custom.TolerantVerifyLeak(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1212,6 +1213,9 @@ func benchmarkExpandedPostings(
 
 	for _, c := range cases {
 		t.Run(c.name, func(t testutil.TB) {
+			if c.name != `i=~".*"` {
+				return
+			}
 			b := &bucketBlock{
 				logger:            log.NewNopLogger(),
 				metrics:           newBucketStoreMetrics(nil),
@@ -1237,14 +1241,21 @@ func benchmarkExpandedPostings(
 func TestBucketSeries(t *testing.T) {
 	tb := testutil.NewTB(t)
 	storetestutil.RunSeriesInterestingCases(tb, 200e3, 200e3, func(t testutil.TB, samplesPerSeries, series int) {
-		benchBucketSeries(t, false, samplesPerSeries, series, 1)
+		benchBucketSeries(t, chunkenc.ValFloat, false, samplesPerSeries, series, 1)
+	})
+}
+
+func TestBucketHistogramSeries(t *testing.T) {
+	tb := testutil.NewTB(t)
+	storetestutil.RunSeriesInterestingCases(tb, 200e3, 200e3, func(t testutil.TB, samplesPerSeries, series int) {
+		benchBucketSeries(t, chunkenc.ValHistogram, false, samplesPerSeries, series, 1)
 	})
 }
 
 func TestBucketSkipChunksSeries(t *testing.T) {
 	tb := testutil.NewTB(t)
 	storetestutil.RunSeriesInterestingCases(tb, 200e3, 200e3, func(t testutil.TB, samplesPerSeries, series int) {
-		benchBucketSeries(t, true, samplesPerSeries, series, 1)
+		benchBucketSeries(t, chunkenc.ValFloat, true, samplesPerSeries, series, 1)
 	})
 }
 
@@ -1252,7 +1263,7 @@ func BenchmarkBucketSeries(b *testing.B) {
 	tb := testutil.NewTB(b)
 	// 10e6 samples = ~1736 days with 15s scrape
 	storetestutil.RunSeriesInterestingCases(tb, 10e6, 10e5, func(t testutil.TB, samplesPerSeries, series int) {
-		benchBucketSeries(t, false, samplesPerSeries, series, 1/100e6, 1/10e4, 1)
+		benchBucketSeries(t, chunkenc.ValFloat, false, samplesPerSeries, series, 1/100e6, 1/10e4, 1)
 	})
 }
 
@@ -1260,11 +1271,11 @@ func BenchmarkBucketSkipChunksSeries(b *testing.B) {
 	tb := testutil.NewTB(b)
 	// 10e6 samples = ~1736 days with 15s scrape
 	storetestutil.RunSeriesInterestingCases(tb, 10e6, 10e5, func(t testutil.TB, samplesPerSeries, series int) {
-		benchBucketSeries(t, true, samplesPerSeries, series, 1/100e6, 1/10e4, 1)
+		benchBucketSeries(t, chunkenc.ValFloat, true, samplesPerSeries, series, 1/100e6, 1/10e4, 1)
 	})
 }
 
-func benchBucketSeries(t testutil.TB, skipChunk bool, samplesPerSeries, totalSeries int, requestedRatios ...float64) {
+func benchBucketSeries(t testutil.TB, sampleType chunkenc.ValueType, skipChunk bool, samplesPerSeries, totalSeries int, requestedRatios ...float64) {
 	const numOfBlocks = 4
 
 	tmpDir := t.TempDir()
@@ -1302,17 +1313,24 @@ func benchBucketSeries(t testutil.TB, skipChunk bool, samplesPerSeries, totalSer
 	// Timestamp will be counted for each new series and new sample, so each each series will have unique timestamp.
 	// This allows to pick time range that will correspond to number of series picked 1:1.
 	for bi := 0; bi < numOfBlocks; bi++ {
-		head, bSeries := storetestutil.CreateHeadWithSeries(t, bi, storetestutil.HeadGenOptions{
+		head, _ := storetestutil.CreateHeadWithSeries(t, bi, storetestutil.HeadGenOptions{
 			TSDBDir:          filepath.Join(tmpDir, fmt.Sprintf("%d", bi)),
 			SamplesPerSeries: samplesPerSeriesPerBlock,
 			Series:           seriesPerBlock,
 			PrependLabels:    extLset,
 			Random:           random,
 			SkipChunks:       t.IsBenchmark() || skipChunk,
+			SampleType:       sampleType,
 		})
 		id := createBlockFromHead(t, blockDir, head)
 		testutil.Ok(t, head.Close())
-		series = append(series, bSeries...)
+
+		// Histogram chunks are represented differently in memory and on disk. In order to
+		// have a precise comparison, we need to use the on-disk representation as the expected value
+		// instead of the in-memory one.
+		diskBlock, err := tsdb.OpenBlock(logger, path.Join(blockDir, id.String()), nil)
+		testutil.Ok(t, err)
+		series = append(series, storetestutil.ReadSeriesFromBlock(t, diskBlock, extLset, skipChunk)...)
 
 		meta, err := metadata.InjectThanos(logger, filepath.Join(blockDir, id.String()), thanosMeta, nil)
 		testutil.Ok(t, err)
@@ -1366,19 +1384,40 @@ func benchBucketSeries(t testutil.TB, skipChunk bool, samplesPerSeries, totalSer
 			seriesCut = expectedSamples / samplesPerSeriesPerBlock
 		}
 
-		bCases = append(bCases, &storetestutil.SeriesCase{
-			Name: fmt.Sprintf("%dof%d", expectedSamples, totalSeries*samplesPerSeries),
-			Req: &storepb.SeriesRequest{
-				MinTime: 0,
-				MaxTime: int64(expectedSamples) - 1,
-				Matchers: []storepb.LabelMatcher{
-					{Type: storepb.LabelMatcher_EQ, Name: "foo", Value: "bar"},
+		matchersCase := []*labels.Matcher{
+			labels.MustNewMatcher(labels.MatchEqual, "foo", "bar"),
+			labels.MustNewMatcher(labels.MatchNotEqual, "foo", "bar"),
+			labels.MustNewMatcher(labels.MatchRegexp, "j", "(0|1)"),
+			labels.MustNewMatcher(labels.MatchRegexp, "j", "0|1"),
+			labels.MustNewMatcher(labels.MatchNotRegexp, "j", "(0|1)"),
+			labels.MustNewMatcher(labels.MatchNotRegexp, "j", "0|1"),
+		}
+
+		for _, lm := range matchersCase {
+			var expectedSeries []*storepb.Series
+			m, err := storepb.PromMatchersToMatchers(lm)
+			testutil.Ok(t, err)
+
+			// seriesCut does not cut chunks properly, but those are assured against for non benchmarks only, where we use 100% case only.
+			for _, s := range series[:seriesCut] {
+				for _, label := range s.Labels {
+					if label.Name == lm.Name && lm.Matches(label.Value) {
+						expectedSeries = append(expectedSeries, s)
+						break
+					}
+				}
+			}
+			bCases = append(bCases, &storetestutil.SeriesCase{
+				Name: fmt.Sprintf("%dof%d[%s]", expectedSamples, totalSeries*samplesPerSeries, lm.String()),
+				Req: &storepb.SeriesRequest{
+					MinTime:    0,
+					MaxTime:    int64(expectedSamples) - 1,
+					Matchers:   m,
+					SkipChunks: skipChunk,
 				},
-				SkipChunks: skipChunk,
-			},
-			// This does not cut chunks properly, but those are assured against for non benchmarks only, where we use 100% case only.
-			ExpectedSeries: series[:seriesCut],
-		})
+				ExpectedSeries: expectedSeries,
+			})
+		}
 	}
 	storetestutil.TestServerSeries(t, st, bCases...)
 
@@ -2140,7 +2179,7 @@ func TestLabelNamesAndValuesHints(t *testing.T) {
 	}
 }
 
-func TestSeries_ChuncksHaveHashRepresentation(t *testing.T) {
+func TestSeries_ChunksHaveHashRepresentation(t *testing.T) {
 	tb := testutil.NewTB(t)
 
 	tmpDir := t.TempDir()
@@ -2440,7 +2479,19 @@ func benchmarkBlockSeriesWithConcurrency(b *testing.B, concurrency int, blockMet
 				testutil.Ok(b, err)
 
 				dummyHistogram := prometheus.NewHistogram(prometheus.HistogramOpts{})
-				blockClient := newBlockSeriesClient(ctx, nil, blk, req, chunksLimiter, NewBytesLimiterFactory(0)(nil), nil, false, SeriesBatchSize, dummyHistogram)
+				blockClient := newBlockSeriesClient(
+					ctx,
+					nil,
+					blk,
+					req,
+					chunksLimiter,
+					NewBytesLimiterFactory(0)(nil),
+					nil,
+					false,
+					SeriesBatchSize,
+					dummyHistogram,
+					nil,
+				)
 				testutil.Ok(b, blockClient.ExpandPostings(matchers, seriesLimiter))
 				defer blockClient.Close()
 

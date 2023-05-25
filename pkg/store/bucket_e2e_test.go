@@ -6,12 +6,15 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/alecthomas/units"
 	"github.com/go-kit/log"
 	"github.com/gogo/status"
 	"github.com/oklog/ulid"
@@ -21,19 +24,18 @@ import (
 	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/storage"
-	"github.com/weaveworks/common/httpgrpc"
 	"google.golang.org/grpc/codes"
 
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/objtesting"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/block"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/model"
 	storecache "github.com/thanos-io/thanos/pkg/store/cache"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
-	"github.com/thanos-io/thanos/pkg/testutil"
 	"github.com/thanos-io/thanos/pkg/testutil/e2eutil"
 )
 
@@ -52,34 +54,20 @@ type swappableCache struct {
 	ptr storecache.IndexCache
 }
 
-type customLimiter struct {
-	limiter *Limiter
-	code    codes.Code
-}
-
-func (c *customLimiter) Reserve(num uint64) error {
-	err := c.limiter.Reserve(num)
-	if err != nil {
-		return httpgrpc.Errorf(int(c.code), err.Error())
-	}
-
-	return nil
-}
-
 func (c *swappableCache) SwapWith(ptr2 storecache.IndexCache) {
 	c.ptr = ptr2
 }
 
-func (c *swappableCache) StorePostings(ctx context.Context, blockID ulid.ULID, l labels.Label, v []byte) {
-	c.ptr.StorePostings(ctx, blockID, l, v)
+func (c *swappableCache) StorePostings(blockID ulid.ULID, l labels.Label, v []byte) {
+	c.ptr.StorePostings(blockID, l, v)
 }
 
 func (c *swappableCache) FetchMultiPostings(ctx context.Context, blockID ulid.ULID, keys []labels.Label) (map[labels.Label][]byte, []labels.Label) {
 	return c.ptr.FetchMultiPostings(ctx, blockID, keys)
 }
 
-func (c *swappableCache) StoreSeries(ctx context.Context, blockID ulid.ULID, id storage.SeriesRef, v []byte) {
-	c.ptr.StoreSeries(ctx, blockID, id, v)
+func (c *swappableCache) StoreSeries(blockID ulid.ULID, id storage.SeriesRef, v []byte) {
+	c.ptr.StoreSeries(blockID, id, v)
 }
 
 func (c *swappableCache) FetchMultiSeries(ctx context.Context, blockID ulid.ULID, ids []storage.SeriesRef) (map[storage.SeriesRef][]byte, []storage.SeriesRef) {
@@ -132,24 +120,6 @@ func prepareTestBlocks(t testing.TB, now time.Time, count int, dir string, bkt o
 	}
 
 	return
-}
-
-func newCustomChunksLimiterFactory(limit uint64, code codes.Code) ChunksLimiterFactory {
-	return func(failedCounter prometheus.Counter) ChunksLimiter {
-		return &customLimiter{
-			limiter: NewLimiter(limit, failedCounter),
-			code:    code,
-		}
-	}
-}
-
-func newCustomSeriesLimiterFactory(limit uint64, code codes.Code) SeriesLimiterFactory {
-	return func(failedCounter prometheus.Counter) SeriesLimiter {
-		return &customLimiter{
-			limiter: NewLimiter(limit, failedCounter),
-			code:    code,
-		}
-	}
 }
 
 func prepareStoreWithTestBlocks(t testing.TB, dir string, bkt objstore.Bucket, manyParts bool, chunksLimiterFactory ChunksLimiterFactory, seriesLimiterFactory SeriesLimiterFactory, bytesLimiterFactory BytesLimiterFactory, relabelConfig []*relabel.Config, filterConf *FilterConfig) *storeSuite {
@@ -243,7 +213,6 @@ func gatherFamily(t testing.TB, reg prometheus.Gatherer, familyName string) *dto
 	return nil
 }
 
-// TODO(bwplotka): Benchmark Series.
 func testBucketStore_e2e(t *testing.T, ctx context.Context, s *storeSuite) {
 	t.Helper()
 
@@ -283,6 +252,27 @@ func testBucketStore_e2e(t *testing.T, ctx context.Context, s *storeSuite) {
 				{{Name: "a", Value: "2"}, {Name: "b", Value: "2"}, {Name: "ext1", Value: "value1"}},
 				{{Name: "a", Value: "2"}, {Name: "c", Value: "1"}, {Name: "ext2", Value: "value2"}},
 				{{Name: "a", Value: "2"}, {Name: "c", Value: "2"}, {Name: "ext2", Value: "value2"}},
+			},
+		},
+		{
+			req: &storepb.SeriesRequest{
+				Matchers: []storepb.LabelMatcher{
+					{Type: storepb.LabelMatcher_RE, Name: "a", Value: "1|2"},
+				},
+				MinTime:              mint,
+				MaxTime:              maxt,
+				WithoutReplicaLabels: []string{"ext1", "ext2"},
+			},
+			expectedChunkLen: 3,
+			expected: [][]labelpb.ZLabel{
+				{{Name: "a", Value: "1"}, {Name: "b", Value: "1"}},
+				{{Name: "a", Value: "1"}, {Name: "b", Value: "2"}},
+				{{Name: "a", Value: "1"}, {Name: "c", Value: "1"}},
+				{{Name: "a", Value: "1"}, {Name: "c", Value: "2"}},
+				{{Name: "a", Value: "2"}, {Name: "b", Value: "1"}},
+				{{Name: "a", Value: "2"}, {Name: "b", Value: "2"}},
+				{{Name: "a", Value: "2"}, {Name: "c", Value: "1"}},
+				{{Name: "a", Value: "2"}, {Name: "c", Value: "2"}},
 			},
 		},
 		{
@@ -613,6 +603,7 @@ func TestBucketStore_Series_ChunksLimiter_e2e(t *testing.T) {
 	cases := map[string]struct {
 		maxChunksLimit uint64
 		maxSeriesLimit uint64
+		maxBytesLimit  int64
 		expectedErr    string
 		code           codes.Code
 	}{
@@ -624,16 +615,18 @@ func TestBucketStore_Series_ChunksLimiter_e2e(t *testing.T) {
 			expectedErr:    "exceeded chunks limit",
 			code:           codes.ResourceExhausted,
 		},
-		"should fail if the max chunks limit is exceeded - 422": {
-			maxChunksLimit: expectedChunks - 1,
-			expectedErr:    "exceeded chunks limit",
-			code:           422,
-		},
-		"should fail if the max series limit is exceeded - 422": {
+		"should fail if the max series limit is exceeded - ResourceExhausted": {
 			maxChunksLimit: expectedChunks,
 			expectedErr:    "exceeded series limit",
 			maxSeriesLimit: 1,
-			code:           422,
+			code:           codes.ResourceExhausted,
+		},
+		"should fail if the max bytes limit is exceeded - ResourceExhausted": {
+			maxChunksLimit: expectedChunks,
+			expectedErr:    "exceeded bytes limit",
+			maxSeriesLimit: 2,
+			maxBytesLimit:  1,
+			code:           codes.ResourceExhausted,
 		},
 	}
 
@@ -645,7 +638,7 @@ func TestBucketStore_Series_ChunksLimiter_e2e(t *testing.T) {
 
 			dir := t.TempDir()
 
-			s := prepareStoreWithTestBlocks(t, dir, bkt, false, newCustomChunksLimiterFactory(testData.maxChunksLimit, testData.code), newCustomSeriesLimiterFactory(testData.maxSeriesLimit, testData.code), NewBytesLimiterFactory(0), emptyRelabelConfig, allowAllFilterConf)
+			s := prepareStoreWithTestBlocks(t, dir, bkt, false, NewChunksLimiterFactory(testData.maxChunksLimit), NewSeriesLimiterFactory(testData.maxSeriesLimit), NewBytesLimiterFactory(units.Base2Bytes(testData.maxBytesLimit)), emptyRelabelConfig, allowAllFilterConf)
 			testutil.Ok(t, s.store.SyncBlocks(ctx))
 
 			req := &storepb.SeriesRequest{
@@ -765,12 +758,67 @@ func TestBucketStore_LabelNames_e2e(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				vals, err := s.store.LabelNames(ctx, tc.req)
+				for _, b := range s.store.blocks {
+					waitTimeout(t, &b.pendingReaders, 5*time.Second)
+				}
+
 				testutil.Ok(t, err)
 
 				testutil.Equals(t, tc.expected, vals.Names)
 			})
 		}
 	})
+}
+
+func TestBucketStore_LabelNames_SeriesLimiter_e2e(t *testing.T) {
+	cases := map[string]struct {
+		maxSeriesLimit uint64
+		expectedErr    string
+		code           codes.Code
+	}{
+		"should succeed if the max series limit is not exceeded": {
+			maxSeriesLimit: math.MaxUint64,
+		},
+		"should fail if the max series limit is exceeded - ResourceExhausted": {
+			expectedErr:    "exceeded series limit",
+			maxSeriesLimit: 1,
+			code:           codes.ResourceExhausted,
+		},
+	}
+
+	for testName, testData := range cases {
+		t.Run(testName, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			bkt := objstore.NewInMemBucket()
+			dir := t.TempDir()
+			s := prepareStoreWithTestBlocks(t, dir, bkt, false, NewChunksLimiterFactory(0), NewSeriesLimiterFactory(testData.maxSeriesLimit), NewBytesLimiterFactory(0), emptyRelabelConfig, allowAllFilterConf)
+			testutil.Ok(t, s.store.SyncBlocks(ctx))
+			req := &storepb.LabelNamesRequest{
+				Matchers: []storepb.LabelMatcher{
+					{Type: storepb.LabelMatcher_EQ, Name: "a", Value: "1"},
+				},
+				Start: minTimeDuration.PrometheusTimestamp(),
+				End:   maxTimeDuration.PrometheusTimestamp(),
+			}
+
+			s.cache.SwapWith(noopCache{})
+
+			_, err := s.store.LabelNames(context.Background(), req)
+
+			if testData.expectedErr == "" {
+				testutil.Ok(t, err)
+			} else {
+				testutil.NotOk(t, err)
+				testutil.Assert(t, strings.Contains(err.Error(), testData.expectedErr))
+
+				status, ok := status.FromError(err)
+				testutil.Equals(t, true, ok)
+				testutil.Equals(t, testData.code, status.Code())
+			}
+		})
+	}
 }
 
 func TestBucketStore_LabelValues_e2e(t *testing.T) {
@@ -868,6 +916,10 @@ func TestBucketStore_LabelValues_e2e(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				vals, err := s.store.LabelValues(ctx, tc.req)
+				for _, b := range s.store.blocks {
+					waitTimeout(t, &b.pendingReaders, 5*time.Second)
+				}
+
 				testutil.Ok(t, err)
 
 				testutil.Equals(t, tc.expected, emptyToNil(vals.Values))
@@ -876,9 +928,81 @@ func TestBucketStore_LabelValues_e2e(t *testing.T) {
 	})
 }
 
+func TestBucketStore_LabelValues_SeriesLimiter_e2e(t *testing.T) {
+	cases := map[string]struct {
+		maxSeriesLimit uint64
+		expectedErr    string
+		code           codes.Code
+	}{
+		"should succeed if the max chunks limit is not exceeded": {
+			maxSeriesLimit: math.MaxUint64,
+		},
+		"should fail if the max series limit is exceeded - ResourceExhausted": {
+			expectedErr:    "exceeded series limit",
+			maxSeriesLimit: 1,
+			code:           codes.ResourceExhausted,
+		},
+	}
+
+	for testName, testData := range cases {
+		t.Run(testName, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bkt := objstore.NewInMemBucket()
+
+			dir := t.TempDir()
+
+			s := prepareStoreWithTestBlocks(t, dir, bkt, false, NewChunksLimiterFactory(0), NewSeriesLimiterFactory(testData.maxSeriesLimit), NewBytesLimiterFactory(0), emptyRelabelConfig, allowAllFilterConf)
+			testutil.Ok(t, s.store.SyncBlocks(ctx))
+
+			req := &storepb.LabelValuesRequest{
+				Label: "a",
+				Start: minTimeDuration.PrometheusTimestamp(),
+				End:   maxTimeDuration.PrometheusTimestamp(),
+				Matchers: []storepb.LabelMatcher{
+					{
+						Type:  storepb.LabelMatcher_EQ,
+						Name:  "a",
+						Value: "1",
+					},
+				},
+			}
+
+			s.cache.SwapWith(noopCache{})
+
+			_, err := s.store.LabelValues(context.Background(), req)
+
+			if testData.expectedErr == "" {
+				testutil.Ok(t, err)
+			} else {
+				testutil.NotOk(t, err)
+				testutil.Assert(t, strings.Contains(err.Error(), testData.expectedErr))
+
+				status, ok := status.FromError(err)
+				testutil.Equals(t, true, ok)
+				testutil.Equals(t, testData.code, status.Code())
+			}
+		})
+	}
+}
+
 func emptyToNil(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
 	return values
+}
+
+func waitTimeout(t *testing.T, wg *sync.WaitGroup, timeout time.Duration) {
+	c := make(chan struct{})
+	go func() {
+		defer close(c)
+		wg.Wait()
+	}()
+	select {
+	case <-c:
+		return
+	case <-time.After(timeout):
+		t.Fatalf("timeout waiting wg for %v", timeout)
+	}
 }

@@ -9,18 +9,22 @@ import (
 
 	"github.com/prometheus/prometheus/promql"
 	v1 "github.com/prometheus/prometheus/web/api/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
 	"github.com/thanos-io/thanos/pkg/query"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb/prompb"
-	"google.golang.org/grpc"
 )
 
 type GRPCAPI struct {
 	now                         func() time.Time
 	replicaLabels               []string
 	queryableCreate             query.QueryableCreator
-	queryEngine                 v1.QueryEngine
+	engineFactory               *QueryEngineFactory
+	defaultEngine               querypb.EngineType
 	lookbackDeltaCreate         func(int64) time.Duration
 	defaultMaxResolutionSeconds time.Duration
 }
@@ -29,7 +33,8 @@ func NewGRPCAPI(
 	now func() time.Time,
 	replicaLabels []string,
 	creator query.QueryableCreator,
-	queryEngine v1.QueryEngine,
+	engineFactory *QueryEngineFactory,
+	defaultEngine querypb.EngineType,
 	lookbackDeltaCreate func(int64) time.Duration,
 	defaultMaxResolutionSeconds time.Duration,
 ) *GRPCAPI {
@@ -37,7 +42,8 @@ func NewGRPCAPI(
 		now:                         now,
 		replicaLabels:               replicaLabels,
 		queryableCreate:             creator,
-		queryEngine:                 queryEngine,
+		engineFactory:               engineFactory,
+		defaultEngine:               defaultEngine,
 		lookbackDeltaCreate:         lookbackDeltaCreate,
 		defaultMaxResolutionSeconds: defaultMaxResolutionSeconds,
 	}
@@ -96,15 +102,36 @@ func (g *GRPCAPI) Query(request *querypb.QueryRequest, server querypb.Query_Quer
 		request.ShardInfo,
 		query.NoopSeriesStatsReporter,
 	)
-	qry, err := g.queryEngine.NewInstantQuery(queryable, &promql.QueryOpts{LookbackDelta: lookbackDelta}, request.Query, ts)
+
+	var engine v1.QueryEngine
+	engineParam := request.Engine
+	if engineParam == querypb.EngineType_default {
+		engineParam = g.defaultEngine
+	}
+
+	switch engineParam {
+	case querypb.EngineType_prometheus:
+		engine = g.engineFactory.GetPrometheusEngine()
+	case querypb.EngineType_thanos:
+		engine = g.engineFactory.GetThanosEngine()
+	default:
+		return status.Error(codes.InvalidArgument, "invalid engine parameter")
+	}
+	qry, err := engine.NewInstantQuery(ctx, queryable, &promql.QueryOpts{LookbackDelta: lookbackDelta}, request.Query, ts)
 	if err != nil {
 		return err
 	}
 	defer qry.Close()
 
 	result := qry.Exec(ctx)
-	if err := server.Send(querypb.NewQueryWarningsResponse(result.Warnings)); err != nil {
-		return nil
+	if result.Err != nil {
+		return status.Error(codes.Aborted, result.Err.Error())
+	}
+
+	if len(result.Warnings) != 0 {
+		if err := server.Send(querypb.NewQueryWarningsResponse(result.Warnings...)); err != nil {
+			return err
+		}
 	}
 
 	switch vector := result.Value.(type) {
@@ -117,15 +144,16 @@ func (g *GRPCAPI) Query(request *querypb.QueryRequest, server querypb.Query_Quer
 		}
 	case promql.Vector:
 		for _, sample := range vector {
+			floats, histograms := prompb.SamplesFromPromqlSamples(sample)
 			series := &prompb.TimeSeries{
-				Labels:  labelpb.ZLabelsFromPromLabels(sample.Metric),
-				Samples: prompb.SamplesFromPromqlPoints([]promql.Point{sample.Point}),
+				Labels:     labelpb.ZLabelsFromPromLabels(sample.Metric),
+				Samples:    floats,
+				Histograms: histograms,
 			}
 			if err := server.Send(querypb.NewQueryResponse(series)); err != nil {
 				return err
 			}
 		}
-
 		return nil
 	}
 
@@ -136,7 +164,8 @@ func (g *GRPCAPI) QueryRange(request *querypb.QueryRangeRequest, srv querypb.Que
 	ctx := srv.Context()
 	if request.TimeoutSeconds != 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds))
+		timeout := time.Duration(request.TimeoutSeconds) * time.Second
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -176,30 +205,68 @@ func (g *GRPCAPI) QueryRange(request *querypb.QueryRangeRequest, srv querypb.Que
 	endTime := time.Unix(request.EndTimeSeconds, 0)
 	interval := time.Duration(request.IntervalSeconds) * time.Second
 
-	qry, err := g.queryEngine.NewRangeQuery(queryable, &promql.QueryOpts{LookbackDelta: lookbackDelta}, request.Query, startTime, endTime, interval)
+	var engine v1.QueryEngine
+	engineParam := request.Engine
+	if engineParam == querypb.EngineType_default {
+		engineParam = g.defaultEngine
+	}
+
+	switch engineParam {
+	case querypb.EngineType_prometheus:
+		engine = g.engineFactory.GetPrometheusEngine()
+	case querypb.EngineType_thanos:
+		engine = g.engineFactory.GetThanosEngine()
+	default:
+		return status.Error(codes.InvalidArgument, "invalid engine parameter")
+	}
+	qry, err := engine.NewRangeQuery(ctx, queryable, &promql.QueryOpts{LookbackDelta: lookbackDelta}, request.Query, startTime, endTime, interval)
 	if err != nil {
 		return err
 	}
 	defer qry.Close()
 
 	result := qry.Exec(ctx)
-	if err := srv.Send(querypb.NewQueryRangeWarningsResponse(result.Warnings)); err != nil {
-		return err
+	if result.Err != nil {
+		return status.Error(codes.Aborted, result.Err.Error())
 	}
 
-	switch matrix := result.Value.(type) {
+	if len(result.Warnings) != 0 {
+		if err := srv.Send(querypb.NewQueryRangeWarningsResponse(result.Warnings...)); err != nil {
+			return err
+		}
+	}
+
+	switch value := result.Value.(type) {
 	case promql.Matrix:
-		for _, series := range matrix {
+		for _, series := range value {
+			floats, histograms := prompb.SamplesFromPromqlSeries(series)
 			series := &prompb.TimeSeries{
-				Labels:  labelpb.ZLabelsFromPromLabels(series.Metric),
-				Samples: prompb.SamplesFromPromqlPoints(series.Points),
+				Labels:     labelpb.ZLabelsFromPromLabels(series.Metric),
+				Samples:    floats,
+				Histograms: histograms,
 			}
 			if err := srv.Send(querypb.NewQueryRangeResponse(series)); err != nil {
 				return err
 			}
 		}
-
+	case promql.Vector:
+		for _, sample := range value {
+			floats, histograms := prompb.SamplesFromPromqlSamples(sample)
+			series := &prompb.TimeSeries{
+				Labels:     labelpb.ZLabelsFromPromLabels(sample.Metric),
+				Samples:    floats,
+				Histograms: histograms,
+			}
+			if err := srv.Send(querypb.NewQueryRangeResponse(series)); err != nil {
+				return err
+			}
+		}
 		return nil
+	case promql.Scalar:
+		series := &prompb.TimeSeries{
+			Samples: []prompb.Sample{{Value: value.V, Timestamp: value.T}},
+		}
+		return srv.Send(querypb.NewQueryRangeResponse(series))
 	}
 
 	return nil

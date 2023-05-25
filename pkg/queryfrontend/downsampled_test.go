@@ -6,9 +6,9 @@ package queryfrontend
 import (
 	"testing"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/internal/cortex/cortexpb"
 	"github.com/thanos-io/thanos/internal/cortex/querier/queryrange"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 func TestDownsampled_MinResponseTime(t *testing.T) {
@@ -112,6 +112,88 @@ func TestDownsampled_MinResponseTime(t *testing.T) {
 				},
 			},
 			expected: 1,
+		},
+		{
+			desc: "three histogram SampleStreams, last is earliest",
+			sampleStreams: []queryrange.SampleStream{
+				{
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 2},
+						{Timestamp: 3},
+					},
+				},
+				{
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 2},
+					},
+				},
+				{
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 1},
+					},
+				},
+			},
+			expected: 1,
+		},
+		{
+			desc: "mixed float and histogram SampleStreams, float is earliest",
+			sampleStreams: []queryrange.SampleStream{
+				{
+					Samples: []cortexpb.Sample{
+						{TimestampMs: 1},
+					},
+				},
+				{
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 2},
+					},
+				},
+			},
+			expected: 1,
+		},
+		{
+			desc: "mixed float and histogram SampleStreams, float is earliest",
+			sampleStreams: []queryrange.SampleStream{
+				{
+					Samples: []cortexpb.Sample{
+						{TimestampMs: 1},
+					},
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 2},
+					},
+				},
+			},
+			expected: 1,
+		},
+		{
+			desc: "mixed float and histogram SampleStreams, histogram is earliest",
+			sampleStreams: []queryrange.SampleStream{
+				{
+					Samples: []cortexpb.Sample{
+						{TimestampMs: 3},
+					},
+				},
+				{
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 2},
+					},
+				},
+			},
+			expected: 2,
+		},
+		{
+			desc: "mixed float and histogram SampleStream, histogram is earliest",
+			sampleStreams: []queryrange.SampleStream{
+				{
+					Samples: []cortexpb.Sample{
+						{TimestampMs: 3},
+					},
+					Histograms: []queryrange.SampleHistogramPair{
+						{Timestamp: 2},
+					},
+				},
+			},
+			expected: 2,
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {

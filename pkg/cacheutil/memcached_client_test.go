@@ -18,9 +18,9 @@ import (
 	prom_testutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/atomic"
 
+	"github.com/efficientgo/core/testutil"
 	"github.com/thanos-io/thanos/pkg/gate"
 	"github.com/thanos-io/thanos/pkg/model"
-	"github.com/thanos-io/thanos/pkg/testutil"
 )
 
 func TestMemcachedClientConfig_validate(t *testing.T) {
@@ -140,8 +140,8 @@ func TestMemcachedClient_SetAsync(t *testing.T) {
 	testutil.Ok(t, err)
 	defer client.Stop()
 
-	testutil.Ok(t, client.SetAsync(ctx, "key-1", []byte("value-1"), time.Second))
-	testutil.Ok(t, client.SetAsync(ctx, "key-2", []byte("value-2"), time.Second))
+	testutil.Ok(t, client.SetAsync("key-1", []byte("value-1"), time.Second))
+	testutil.Ok(t, client.SetAsync("key-2", []byte("value-2"), time.Second))
 	testutil.Ok(t, backendMock.waitItems(2))
 
 	actual, err := client.getMultiSingle(ctx, []string{"key-1", "key-2"})
@@ -166,8 +166,8 @@ func TestMemcachedClient_SetAsyncWithCustomMaxItemSize(t *testing.T) {
 	testutil.Ok(t, err)
 	defer client.Stop()
 
-	testutil.Ok(t, client.SetAsync(ctx, "key-1", []byte("value-1"), time.Second))
-	testutil.Ok(t, client.SetAsync(ctx, "key-2", []byte("value-2-too-long-to-be-stored"), time.Second))
+	testutil.Ok(t, client.SetAsync("key-1", []byte("value-1"), time.Second))
+	testutil.Ok(t, client.SetAsync("key-2", []byte("value-2-too-long-to-be-stored"), time.Second))
 	testutil.Ok(t, backendMock.waitItems(1))
 
 	actual, err := client.getMultiSingle(ctx, []string{"key-1", "key-2"})
@@ -384,7 +384,7 @@ func TestMemcachedClient_GetMulti(t *testing.T) {
 
 			// Populate memcached with the initial items.
 			for _, item := range testData.initialItems {
-				testutil.Ok(t, client.SetAsync(ctx, item.Key, item.Value, time.Second))
+				testutil.Ok(t, client.SetAsync(item.Key, item.Value, time.Second))
 			}
 
 			// Wait until initial items have been added.
@@ -437,8 +437,8 @@ func TestMemcachedClient_sortKeysByServer(t *testing.T) {
 	}
 
 	sorted := client.sortKeysByServer(keys)
-	testutil.Contains(t, sorted, []string{"key1", "key3", "key5"})
-	testutil.Contains(t, sorted, []string{"key2", "key4", "key6"})
+	testutil.ContainsStringSlice(t, sorted, []string{"key1", "key3", "key5"})
+	testutil.ContainsStringSlice(t, sorted, []string{"key2", "key4", "key6"})
 }
 
 type mockAddr string
